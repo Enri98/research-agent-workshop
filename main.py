@@ -1,6 +1,6 @@
 import click
 
-from ready_implementation.agent import create_agent
+from agent.agent import create_agent
 
 
 @click.command()
@@ -18,11 +18,11 @@ def main(query: str) -> None:
     """
     agent = create_agent()
 
-    click.echo(click.style("\n🎲 Searching the D&D 5e SRD...\n", fg="cyan", bold=True))
+    click.echo(click.style("\nD&D 5e SRD Research\n", fg="cyan", bold=True))
 
     response = agent.run(query)
 
-    click.echo(click.style("📜 Answer:", fg="green", bold=True))
+    click.echo(click.style("Answer:", fg="green", bold=True))
     click.echo(response.text)
 
 

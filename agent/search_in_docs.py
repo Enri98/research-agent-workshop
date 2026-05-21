@@ -9,18 +9,20 @@ from rapidfuzz import fuzz
 def search_in_doc(
     query: str,
     doc_path: str | Path,
-    surrounding: int = 100,
+    surrounding: int = 5,
     after_only: bool = False,
     fuzzy: bool = False,
+    case_sensitive: bool = False,
 ) -> list[dict[str, str]]:
     """Search for query in a single document.
 
     Args:
         query: The search string (supports regex).
         doc_path: The path to the document to search (mandatory).
-        surrounding: Number of characters before and after the match to include (default: 100).
-        after_only: If True, only include characters after the match, not before (default: False).
+        surrounding: Number of lines before and after the match to include (default: 5).
+        after_only: If True, only include lines after the match, not before (default: False).
         fuzzy: If True, use fuzzy search to find similar text (default: False).
+        case_sensitive: If True, match case exactly (default: False).
 
     Returns:
         A list of dicts, each containing:
@@ -32,28 +34,47 @@ def search_in_doc(
     results: list[dict[str, str]] = []
     file_path = Path(doc_path)
 
-    # TODO: Check if the file exists, return empty results if not
+    if not file_path.exists():
+        return results
 
-    # TODO: Compile the query as a regex pattern (case insensitive)
-    # If the query is not valid regex, escape it first
-    pattern = ...
+    regex_flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        pattern = re.compile(query, regex_flags)
+    except re.error:
+        # If query is not valid regex, escape it
+        pattern = re.compile(re.escape(query), regex_flags)
 
-    # TODO: Read the file content
+    content = file_path.read_text(encoding="utf-8")
+    heading_index = _build_heading_index(content)
 
-    # TODO: Build the heading index for title path extraction
-    heading_index = ...
+    if fuzzy:
+        match_spans = _fuzzy_find_matches(
+            query,
+            content,
+            case_sensitive=case_sensitive,
+        )
+    else:
+        match_spans = [
+            (m.start(), m.end(), m.group()) for m in pattern.finditer(content)
+        ]
 
-    # TODO: Find matches - either fuzzy or regex based on the fuzzy flag
-    # Each match should be a tuple of (start_position, end_position, matched_text)
-    match_spans = ...
+    for match_start, match_end, matched_text in match_spans:
+        context = _line_context(
+            content=content,
+            match_start=match_start,
+            match_end=match_end,
+            surrounding=surrounding,
+            after_only=after_only,
+        )
 
-    # TODO: For each match, extract context with surrounding characters
-    # - If after_only is True, start from match_start
-    # - Otherwise, start from max(0, match_start - surrounding)
-    # - End at min(len(content), match_end + surrounding)
-    # - Add ellipsis if content was truncated
-
-    # TODO: Append result dict with source, content, match, and title_path
+        results.append(
+            {
+                "source": file_path.name,
+                "content": context,
+                "match": matched_text,
+                "title_path": _find_title_path(match_start, heading_index),
+            }
+        )
 
     return results
 
@@ -62,9 +83,10 @@ def search_in_documents(
     query: str,
     document: str | None = None,
     folder: str = "knowledge_base/docs",
-    surrounding: int = 100,
+    surrounding: int = 5,
     after_only: bool = False,
     fuzzy: bool = False,
+    case_sensitive: bool = False,
 ) -> list[dict[str, str]]:
     """Search for query in documents and return matches with surrounding context.
 
@@ -72,9 +94,10 @@ def search_in_documents(
         query: The search string (supports regex).
         document: Optional specific document filename to search. If None, searches all .md files in folder.
         folder: Folder path containing documents to search (default: "knowledge_base/docs").
-        surrounding: Number of characters before and after the match to include (default: 100).
-        after_only: If True, only include characters after the match, not before (default: False).
+        surrounding: Number of lines before and after the match to include (default: 5).
+        after_only: If True, only include lines after the match, not before (default: False).
         fuzzy: If True, use fuzzy search to find similar text (default: False).
+        case_sensitive: If True, match case exactly (default: False).
 
     Returns:
         A list of dicts, each containing:
@@ -85,72 +108,105 @@ def search_in_documents(
     """
     folder_path = Path(folder)
 
-    # TODO: If a specific document is provided:
-    #   - Build the path to that document
-    #   - Try adding .md extension if file doesn't exist
-    #   - Call search_in_doc and return results
-
-    # TODO: If no document specified:
-    #   - Iterate over all .md files in the folder (sorted)
-    #   - Call search_in_doc for each file
-    #   - Collect and return all results
-
-    return []
+    # Search in single document or all documents in folder
+    if document:
+        doc_path = folder_path / document
+        if not doc_path.exists():
+            # Try with .md extension
+            doc_path = folder_path / f"{document}.md"
+        return search_in_doc(
+            query=query,
+            doc_path=doc_path,
+            surrounding=surrounding,
+            after_only=after_only,
+            fuzzy=fuzzy,
+            case_sensitive=case_sensitive,
+        )
+    else:
+        results: list[dict[str, str]] = []
+        for file_path in sorted(folder_path.glob("*.md")):
+            results.extend(
+                search_in_doc(
+                    query=query,
+                    doc_path=file_path,
+                    surrounding=surrounding,
+                    after_only=after_only,
+                    fuzzy=fuzzy,
+                    case_sensitive=case_sensitive,
+                )
+            )
+        return results
 
 
 def _build_heading_index(content: str) -> tuple[list[int], list[str]]:
-    """Precompute markdown heading positions with their hierarchical paths.
-
-    This function scans the content for markdown headings (# to ######) and
-    builds an index that maps positions to heading paths like "Chapter > Section > Subsection".
-
-    Args:
-        content: The full text content to scan for headings.
-
-    Returns:
-        A tuple of (positions, paths) where:
-            - positions: List of character positions where headings start
-            - paths: List of hierarchical heading paths at those positions
-    """
-    # TODO: Create a regex pattern to match markdown headings
-    # Pattern should match lines starting with 1-6 # characters followed by text
-    heading_pattern = ...
-
-    stack: list[tuple[int, str]] = []  # Stack of (level, title) for building hierarchy
+    """Precompute markdown heading positions with their hierarchical paths."""
+    heading_pattern = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+    stack: list[tuple[int, str]] = []
     positions: list[int] = []
     paths: list[str] = []
 
-    # TODO: For each heading match:
-    #   - Get the heading level (count of # characters)
-    #   - Get the heading title text
-    #   - Pop items from stack that are at same or deeper level
-    #   - Push current heading to stack
-    #   - Build path by joining all stack titles with " > "
-    #   - Record position and path
+    for heading in heading_pattern.finditer(content):
+        level = len(heading.group(1))
+        title = heading.group(2).strip()
+
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+
+        stack.append((level, title))
+        path = " > ".join(item for _, item in stack)
+        positions.append(heading.start())
+        paths.append(path)
 
     return positions, paths
 
 
 def _find_title_path(position: int, heading_index: tuple[list[int], list[str]]) -> str:
-    """Return the latest heading path occurring before the given position.
-
-    Args:
-        position: Character position in the document.
-        heading_index: Tuple of (positions, paths) from _build_heading_index.
-
-    Returns:
-        The heading path string, or empty string if no heading precedes the position.
-    """
+    """Return the latest heading path occurring before the given position."""
     positions, paths = heading_index
+    if not positions:
+        return ""
 
-    # TODO: Handle empty positions list
+    idx = bisect_right(positions, position) - 1
+    if idx < 0:
+        return ""
 
-    # TODO: Use bisect_right to find the insertion point
-    # The heading we want is at index (insertion_point - 1)
+    return paths[idx]
 
-    # TODO: Return the path at that index, or empty string if index < 0
 
-    return ""
+def _line_context(
+    content: str,
+    match_start: int,
+    match_end: int,
+    surrounding: int,
+    after_only: bool,
+) -> str:
+    """Return whole-line context around a match span."""
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        return ""
+
+    line_starts: list[int] = []
+    position = 0
+    for line in lines:
+        line_starts.append(position)
+        position += len(line)
+
+    match_start_line = max(0, bisect_right(line_starts, match_start) - 1)
+    match_end_position = max(match_start, match_end - 1)
+    match_end_line = max(0, bisect_right(line_starts, match_end_position) - 1)
+
+    context_start_line = (
+        match_start_line if after_only else max(0, match_start_line - surrounding)
+    )
+    context_end_line = min(len(lines), match_end_line + surrounding + 1)
+    context = "".join(lines[context_start_line:context_end_line])
+
+    if context_start_line > 0 and not after_only:
+        context = "..." + context
+    if context_end_line < len(lines):
+        context = context + "..."
+
+    return context
 
 
 def _fuzzy_find_matches(
@@ -159,32 +215,46 @@ def _fuzzy_find_matches(
     fuzzy_threshold: float = 85.0,
     max_fuzzy_matches_per_block: int = 5,
     paragraph_pattern: re.Pattern[str] = re.compile(r".+?(?:\n\s*\n|$)", re.DOTALL),
+    case_sensitive: bool = False,
 ) -> list[tuple[int, int, str]]:
-    """Find approximate matches for query inside content.
-
-    Args:
-        query: The search query to find approximately.
-        content: The text content to search in.
-        fuzzy_threshold: Minimum similarity score (0-100) for a match (default: 85.0).
-        max_fuzzy_matches_per_block: Maximum matches to find per paragraph (default: 5).
-        paragraph_pattern: Regex pattern to split content into blocks.
-
-    Returns:
-        List of (start_position, end_position, matched_text) tuples.
-    """
+    """Find approximate matches for query inside content."""
     matches: list[tuple[int, int, str]] = []
     normalized_query = query.strip()
+    if not normalized_query:
+        return matches
 
-    # TODO: Return empty list if query is empty after stripping
+    query_norm = normalized_query if case_sensitive else normalized_query.casefold()
 
-    query_norm = normalized_query.lower()
+    for block in paragraph_pattern.finditer(content):
+        segment = block.group()
+        if not segment.strip():
+            continue
 
-    # TODO: For each paragraph/block in content:
-    #   - Skip empty blocks
-    #   - Use fuzz.partial_ratio_alignment to find fuzzy matches
-    #   - If alignment score >= threshold, record the match
-    #   - Replace matched portion with spaces to find additional matches
-    #   - Stop when max matches reached or no more matches found
+        working_norm = segment if case_sensitive else segment.casefold()
+        match_count = 0
+
+        while match_count < max_fuzzy_matches_per_block:
+            alignment = fuzz.partial_ratio_alignment(query_norm, working_norm)
+            if alignment.score < fuzzy_threshold:
+                break
+
+            relative_start = alignment.dest_start
+            relative_end = alignment.dest_end
+            abs_start = block.start() + relative_start
+            abs_end = block.start() + relative_end
+            matched_text = content[abs_start:abs_end].strip()
+            if not matched_text:
+                matched_text = segment.strip()
+
+            matches.append((abs_start, abs_end, matched_text))
+            match_count += 1
+
+            replacement = " " * (relative_end - relative_start)
+            working_norm = (
+                working_norm[:relative_start]
+                + replacement
+                + working_norm[relative_end:]
+            )
 
     return matches
 
@@ -205,20 +275,25 @@ def _fuzzy_find_matches(
 @click.option(
     "--surrounding",
     "-s",
-    default=100,
+    default=5,
     type=int,
-    help="Characters of context before/after match",
+    help="Lines of context before/after match",
 )
 @click.option(
     "--after-only",
     "-a",
     is_flag=True,
-    help="Only include characters after the match, not before",
+    help="Only include lines after the match, not before",
 )
 @click.option(
     "--fuzzy",
     is_flag=True,
     help="Enable fuzzy search to find approximate matches",
+)
+@click.option(
+    "--case-sensitive",
+    is_flag=True,
+    help="Match case exactly instead of the default case-insensitive search",
 )
 def main(
     query: str,
@@ -227,6 +302,7 @@ def main(
     surrounding: int,
     after_only: bool,
     fuzzy: bool,
+    case_sensitive: bool,
 ) -> None:
     """Search for QUERY in markdown documents."""
     results = search_in_documents(
@@ -236,6 +312,7 @@ def main(
         surrounding=surrounding,
         after_only=after_only,
         fuzzy=fuzzy,
+        case_sensitive=case_sensitive,
     )
 
     if not results:
@@ -253,4 +330,3 @@ def main(
 
 if __name__ == "__main__":
     main()
-
