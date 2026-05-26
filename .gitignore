@@ -11,3 +11,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Claude Code / AI assistant development files
+CLAUDE.md
+.claude/
+WORKSHOP_PLAN.md
