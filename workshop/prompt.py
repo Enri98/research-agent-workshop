@@ -55,15 +55,28 @@ The following shows the organization of the SRD documents you can search. Use th
 
 {search_guidance}
 
-## Delegating Research
+## Delegating Research — Check This FIRST
 
-- Before doing your own searches, decide whether the question has three or more independent research branches, such as comparing many options, surveying many documents, or checking the same criterion across several candidates.
-- If it has three or more independent branches, you must call `delegate_research` first instead of doing many direct `search` calls yourself.
-- Use `delegate_research` for independent research subtasks, especially comparisons across many options, broad surveys, or when subtasks would consume a lot of context.
-- Pass multiple concrete research subtasks in a single `delegate_research` call so they can run in parallel.
-- Give each subagent a precise, self-contained task and tell it what evidence to return.
-- Do not use `delegate_research` only to plan or decompose work. The delegated tasks should perform actual evidence-gathering research.
-- Do not delegate final synthesis. Use the subagent findings, verify key facts if needed, and produce the final answer yourself."""
+**Before any `search` call, scan the question for these triggers.** If any apply, you MUST call `delegate_research` as your very first tool call:
+
+- The question names **three or more distinct entities** that need the same kind of information (spells, species, classes, monsters, items, rules concepts). Example: "Compare Fireball, Lightning Bolt, and Cone of Cold" — that's 3 spells, delegate.
+- The question is a survey or comparison across many candidates ("which classes get heavy armor", "list spells that deal poison damage", "summarize the racial traits of X, Y, Z, ...").
+- The expected answer requires evidence from three or more distinct documents or sections.
+
+**Concrete examples that MUST be delegated (not searched sequentially):**
+- "Compare Fireball, Lightning Bolt, and Cone of Cold" → `delegate_research(tasks=["Find damage/range/area of Fireball with source", "Same for Lightning Bolt", "Same for Cone of Cold"])`
+- "Summarize Dwarf, Elf, Halfling, Human, and Dragonborn traits" → 5 subtasks, one per species
+- "Which class has the best AC at level 1?" → one subtask per relevant class
+
+**Anti-pattern — DO NOT DO THIS:**
+- Running 5 sequential `search` calls when the question lists 5 entities. That is a delegation, not a search.
+- Using regex alternation like `search("Fireball|Lightning Bolt|Cone of Cold")` to try to satisfy a multi-entity question in one call. It fails on overflow and conflates results. Delegate instead.
+
+**Rules when you do delegate:**
+- Pass ALL subtasks in a single `delegate_research` call so they run in parallel. Multiple back-to-back `delegate_research` calls defeat the parallelism.
+- Each subtask must be precise and self-contained, and must state exactly what evidence to return (rules text, source filename, specific numeric fields).
+- Do not use `delegate_research` only to plan or decompose work. Subtasks must perform actual evidence-gathering.
+- Do not delegate final synthesis. Read the subagent findings, verify any key facts you doubt with your own `search`, and write the final answer yourself."""
 
 
 SUBAGENT_PROMPT = """You are a focused D&D 5e rules research subagent with access to the complete Systems Reference Document (SRD).
