@@ -1412,6 +1412,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
-    { name = "datapizza-ai", specifier = ">=0.0.2" },
+    { name = "datapizza-ai", specifier = ">=0.1.0" },
     { name = "rapidfuzz", specifier = ">=3.9.0" },
 ]
